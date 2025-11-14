@@ -36,7 +36,7 @@ if [ ! -d "${OUTDIR}/linux-stable" ]; then
 fi
 if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; # build kernel only if doesn't exit yet.
 then 
-    cd linux-stable
+    cd "linux-stable"
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
 
@@ -49,59 +49,101 @@ then
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs #build device tree blobs
 fi
 
-echo "Adding the Image in outdir"
+echo "Adding the Image in outdir/Image"
+sudo cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}
 
 echo "Creating the staging directory for the root filesystem"
 cd "$OUTDIR"
 if [ -d "${OUTDIR}/rootfs" ]
 then
 	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
-    rm -rf ${OUTDIR}/rootfs
+    sudo rm -rf ${OUTDIR}/rootfs
 fi
 
-mkdir ${OUTDIR}/rootfs
-cd ${OUTDIR}/rootfs
+mkdir -p ${OUTDIR}/rootfs
+cd "${OUTDIR}/rootfs"
 mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
 mkdir -p usr/bin usr/lib usr/sbin
 mkdir -p var/log
 
-
+echo "---------------- Busybox ------------------------------------"
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
 then
-    #git clone git://busybox.net/busybox.git
+    #git clone git://busybox.net/busybox.git # this one fails sometimes on the remote server
     git clone https://github.com/mirror/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
-    
+
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} distclean
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE}
-    make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install 
 else
     cd busybox
 fi
 
-# TODO: Make and install busybox
+make CONFIG_PREFIX=${OUTDIR}/rootfs ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} install 
+echo "done"
 
-echo "Library dependencies"
-${CROSS_COMPILE}readelf -a busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a busybox | grep "Shared library"
+echo "---------------- resolve Library dependencies----------------"
+cd "${OUTDIR}/rootfs"
+${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
+${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+${CROSS_COMPILE}gcc -print-sysroot
 
-# # TODO: Add library dependencies to rootfs
-# SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
-# LIBC=$(${CROSS_COMPILE}gcc -print-file-name=libc.so).6
-# LIBM=$(${CROSS_COMPILE}gcc -print-file-name=libm.so).6
-# LIBDL=$(${CROSS_COMPILE}gcc -print-file-name=libdl.so).2
+cp -v $(${CROSS_COMPILE}gcc --print-sysroot)/lib/ld-linux-aarch64.so.1 ${OUTDIR}/rootfs/lib/ # program interpreter must be in lib!!!!
+cp -v $(${CROSS_COMPILE}gcc --print-sysroot)/lib64/libm.so.6 ${OUTDIR}/rootfs/lib64/
+cp -v $(${CROSS_COMPILE}gcc --print-sysroot)/lib64/libc.so.6 ${OUTDIR}/rootfs/lib64/
+cp -v $(${CROSS_COMPILE}gcc --print-sysroot)/lib64/libresolv.so.2 ${OUTDIR}/rootfs/lib64
 
+echo "done"
 
-# TODO: Make device nodes
+echo "---------------- make devices -------------------------------"
+cd "${OUTDIR}/rootfs"
+sudo mknod -m 666 dev/null c 1 3 # null device
+sudo mknod -m 666 dev/console c 5 1 # console device
+echo "done"
 
-# TODO: Clean and build the writer utility
+echo "---------------- Clean and build the writer utility----------"
+cd "${FINDER_APP_DIR}"
+make CROSS_COMPILE=${CROSS_COMPILE} clean
+make CROSS_COMPILE=${CROSS_COMPILE} all
+echo "done"
 
-# TODO: Copy the finder related scripts and executables to the /home directory
-# on the target rootfs
+echo "---------------- copy finder app ----------------------------"
+cp -v ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home/
 
-# TODO: Chown the root directory
+cp -v ${FINDER_APP_DIR}/finder.sh ${OUTDIR}/rootfs/home/
+chmod +x ${OUTDIR}/rootfs/home/finder.sh
+cp -v ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home/
+chmod +x ${OUTDIR}/rootfs/home/finder-test.sh
 
-# TODO: Create initramfs.cpio.gz
+mkdir -p ${OUTDIR}/rootfs/home/conf/
+cp -v ${FINDER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf/
+cp -v ${FINDER_APP_DIR}/conf/assignment.txt ${OUTDIR}/rootfs/home/conf/
+
+cp -v ${FINDER_APP_DIR}/autorun-qemu.sh ${OUTDIR}/rootfs/home/
+echo "done"
+
+echo "---------------- create initramfs.cpio.gz -------------------"
+# Create a standalone initramfs and outdir/initramfs.cpio.gz file based on the contents of the staging directory tree.
+cd "${OUTDIR}/rootfs"
+#remove existing initramfs.cpio.gz if it exists
+if [ -f ${OUTDIR}/initramfs.cpio.gz ]; then
+    sudo rm ${OUTDIR}/initramfs.cpio.gz
+fi
+if [ -f ${OUTDIR}/initramfs.cpio ]; then
+    sudo rm ${OUTDIR}/initramfs.cpio
+fi
+
+#chown -R root:root *
+sudo find . | cpio -H newc -ov --owner root:root > ${OUTDIR}/initramfs.cpio
+sudo gzip -f ${OUTDIR}/initramfs.cpio
+echo "done"
+
+echo "---------------- All Done -----------------------------------"
+
+echo "---------------- Start QEMU Terminal ------------------------"
+cd "${OUTDIR}"
+sudo ${FINDER_APP_DIR}/start-qemu-app.sh
+
