@@ -201,5 +201,6 @@ int main(int argc, char *argv[])
     close(fd_srv);
     remove("/var/tmp/aesdsocketdata");
     closelog();
+        
     return 0;
 }
